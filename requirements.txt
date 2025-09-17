@@ -1,0 +1,19 @@
+#Install Dependencies:
+#You will also need to install external tools:
+#SPAdes: For local assembly. Follow their installation guide.
+#Samtools/BCFtools: For genomic file manipulation.
+
+torch
+transformers
+tokenizers
+pysam
+pyfaidx
+pyVCF
+pandas
+scikit-learn
+ray[tune]
+hyperopt
+biopython
+tqdm
+numpy
+#Install them with `pip install -r requirements.txt

@@ -1,0 +1,140 @@
+#Create a Conda Environment:
+Create a dedicated environment for these tools
+
+conda create -n sv-calling -c bioconda sniffles=2.3 pbsv=2.9.0 svim=2.1.0 cutesv=2.2.1 survivor=1.0.7 samtools -y
+
+#Activate the Environment:
+You must activate this environment in every new terminal session before using the tools.
+
+conda activate sv-calling
+
+Running the Structural Variant Callers
+All commands below assume you are in the dnabert-sv/ root directory and have your input files located in the data/ subdirectory as specified previously.
+Reference Genome: data/reference.fasta
+BAM File: data/HG002_PacBio-HiFi-Revio_20231031_48x_GRCh38-GIABv3.bam
+Output Directory for VCFs: data/candidate_vcfs/
+1. Sniffles2
+Sniffles2 is very efficient and designed for long reads. The command combines calling and filtering into one step.
+code
+Bash
+# Command to run Sniffles2
+sniffles \
+  --input data/HG002_PacBio-HiFi-Revio_20231031_48x_GRCh38-GIABv3.bam \
+  --reference data/reference.fasta \
+  --vcf data/candidate_vcfs/sniffles2.vcf \
+  --threads 8 \
+  --sample-id HG002 \
+  --minsupport 5 # Set a reasonable minimum read support for HiFi data
+--input: The aligned long-read data.
+--reference: The reference genome FASTA file.
+--vcf: The path for the output VCF file.
+--threads: Number of CPU threads to use. Adjust based on your system.
+--sample-id: Sets the sample name in the VCF file.
+--minsupport: The minimum number of reads supporting a variant call. 5 is a good starting point for ~50x coverage HiFi data.
+2. pbsv (from PacBio)
+pbsv is part of the official PacBio toolsuite and is well-optimized for their data.
+code
+Bash
+# Command to run pbsv
+pbsv call \
+  --hifi \
+  data/reference.fasta \
+  data/HG002_PacBio-HiFi-Revio_20231031_48x_GRCh38-GIABv3.bam \
+  data/candidate_vcfs/pbsv.vcf
+--hifi: A crucial flag that tunes the calling model specifically for PacBio HiFi reads, improving accuracy.
+The first two positional arguments are the reference and the BAM file.
+The final argument is the output VCF file.
+3. SVIM (Structural Variant Identification from Mapped reads)
+SVIM is another popular caller for long reads that can detect a wide variety of structural variants.
+code
+Bash
+# Command to run SVIM
+svim alignment \
+  data/candidate_vcfs/ \
+  data/HG002_PacBio-HiFi-Revio_20231031_48x_GRCh38-GIABv3.bam \
+  data/reference.fasta \
+  --sample HG002 \
+  --minimum_depth 5 # Filter out regions with very low coverage
+The first argument is the output directory where results (including the VCF) will be stored.
+alignment: The mode for calling SVs from read alignments.
+--sample: Sets the sample name in the VCF.
+--minimum_depth: Similar to --minsupport, helps filter noisy calls.
+Note: SVIM will create a directory named variants inside data/candidate_vcfs/. The final VCF will be located at data/candidate_vcfs/variants/variants.vcf. You should rename or move it for consistency.
+code
+Bash
+# Rename the SVIM output for consistency
+mv data/candidate_vcfs/variants/variants.vcf data/candidate_vcfs/svim.vcf
+4. cuteSV
+cuteSV is known for its sensitivity, especially for insertions and deletions.
+code
+Bash
+# Command to run cuteSV
+cuteSV \
+  data/HG002_PacBio-HiFi-Revio_20231031_48x_GRCh38-GIABv3.bam \
+  data/reference.fasta \
+  data/candidate_vcfs/cutesv.vcf \
+  data/candidate_vcfs/ \
+  --max_cluster_bias_INS 100 \
+  --diff_ratio_merging_INS 0.3 \
+  --max_cluster_bias_DEL 100 \
+  --diff_ratio_merging_DEL 0.3 \
+  --min_support 5 \
+  --sample HG002 \
+  --threads 8
+The first three arguments are the input BAM, reference, and output VCF.
+The fourth argument is a temporary working directory.
+--min_support: Minimum number of reads supporting an SV.
+The other parameters (--max_cluster_bias..., --diff_ratio_merging...) are recommended by the developers for HiFi data to improve accuracy.
+Part 2: Merging VCFs with SURVIVOR
+After running all four callers, you will have four VCF files in your data/candidate_vcfs/ directory. SURVIVOR is a tool designed to compare and merge call sets from different SV callers.
+Command for SURVIVOR
+The command below merges SVs that are of the same type and are found within a 1kb distance of each other, requiring support from at least two callers to be included in the final merged VCF.
+code
+Bash
+# 1. Create a text file listing the paths to your VCF files
+ls data/candidate_vcfs/*.vcf > data/candidate_vcfs/vcf_file_list.txt
+
+# 2. Run SURVIVOR merge
+SURVIVOR merge \
+  data/candidate_vcfs/vcf_file_list.txt \
+  1000 \
+  2 \
+  1 \
+  1 \
+  0 \
+  data/candidate_vcfs/SURVIVOR_merged.vcf
+Explanation of SURVIVOR Parameters:
+data/candidate_vcfs/vcf_file_list.txt: The input file containing the paths to the VCFs to be merged (one path per line).
+1000: Maximum distance (in base pairs) between breakpoints to consider SVs as equivalent. A 1kb window is standard.
+2: Minimum number of callers that must support an SV for it to be included in the output. This is the key parameter for filtering for high-confidence calls.
+1: Take type of SV into account (i.e., a DEL will only be merged with another DEL). This is essential.
+1: Take strand into account (important for breakends/BNDs).
+0: Keep variants even if their size estimates differ. We set this to 0 (disabled) to let SURVIVOR estimate the size from the merged calls, but you could set this to a value (e.g., 0.5 for 50% similarity) for stricter merging.
+data/candidate_vcfs/SURVIVOR_merged.vcf: The final, merged output VCF file.
+Expected Output
+After running the SURVIVOR command, you will get a new VCF file: data/candidate_vcfs/SURVIVOR_merged.vcf.
+When you open this file, you will see a standard VCF format, but with a special INFO field added by SURVIVOR.
+Example of a merged VCF entry:
+code
+Vcf
+#CHROM  POS     ID                      REF   ALT     QUAL  FILTER  INFO                                                                                                FORMAT        HG002
+chr1    2345678 SURVIVOR_1_2_3_4_chr1_2345678  N     <DEL>   .     PASS    SUPP=3;SUPP_VEC=1101;SVLEN=-1234;SVTYPE=DEL;SVMETHOD=SURVIVOR;CHR2=chr1;END=2346912;CIPOS=0,0;CIEND=0,0   GT:DR:DV```
+
+**Key features of the output:**
+
+1.  **Merged Records:** Each line represents a unique structural variant event that was called by at least two of your specified callers.
+2.  **`INFO` Field:** This is the most important part for interpretation.
+    *   **`SVTYPE=DEL`**: The type of structural variant.
+    *   **`SVLEN=-1234`**: The length of the SV. Negative for deletions.
+    *   **`END=2346912`**: The end coordinate of the SV.
+    *   **`SUPP=3`**: **(Support)** This is the crucial field. It tells you that **3** different callers supported this exact variant call.
+    *   **`SUPP_VEC=1101`**: **(Support Vector)** This is a binary vector indicating *which* callers supported the call. The order corresponds to the order of files in your `vcf_file_list.txt`.
+        *   If the file order was: `cutesv.vcf`, `pbsv.vcf`, `sniffles2.vcf`, `svim.vcf`
+        *   Then `1101` means:
+            *   `1`: cutesv supported it.
+            *   `1`: pbsv supported it.
+            *   `0`: sniffles2 did **not** support it.
+            *   `1`: svim supported it.
+3.  **Consensus Positions:** The `POS` and `END` coordinates in the merged file are a consensus calculated by SURVIVOR from the calls it merged.
+
+This merged VCF file, containing high-confidence calls supported by multiple tools, is an excellent input for the `preprocess.py` script in your DNABERT-2 pipeline. You would treat this merged file as your primary source of candidate variants.
